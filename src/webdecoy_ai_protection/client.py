@@ -19,6 +19,7 @@ from weakref import WeakKeyDictionary
 import httpx
 
 from .models import Check, Decision, FailureMode, Mode, Outcome, RequestMetadata, Rule, RuleResult
+from .quota import AccountQuota, _check_quota, _validate_quota
 
 _LOG = logging.getLogger("webdecoy_ai_protection")
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
@@ -37,7 +38,9 @@ def _duration(value: float) -> bool:
 
 
 class _Unavailable(Exception):
-    pass
+    def __init__(self, status: int | None = None):
+        super().__init__("WebDecoy request unavailable")
+        self.status = status
 
 
 class Client:
@@ -60,6 +63,7 @@ class Client:
         max_pending_reports: int = 100,
         rules: Sequence[Rule] = (),
         reporting: bool = True,
+        account_quota: AccountQuota | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         try:
@@ -114,6 +118,9 @@ class Client:
             ):
                 raise ValueError("invalid or duplicate synchronous local rule")
             ids.add(rule.id)
+        if account_quota is not None:
+            _validate_quota(account_quota)
+        self._quota = account_quota
         self._base_url = base_url.rstrip("/")
         self._property_id = property_id.lower()
         self._mode = mode
@@ -164,7 +171,7 @@ class Client:
                     timeout=timeout,
                 ) as response:
                     if not 200 <= response.status_code < 300:
-                        raise _Unavailable()
+                        raise _Unavailable(response.status_code)
                     # Reject compressed bodies to bound memory before decompression.
                     if response.headers.get("content-encoding", "identity").lower() not in (
                         "",
@@ -282,8 +289,21 @@ class Client:
                 )
             ):
                 allowed, reason, status = False, why, denied_status
+        quota_result = None
+        if allowed and self._quota is not None:
+            quota_result = await _check_quota(self, self._quota, context)
+            checks.append(quota_result.check)
+            degraded |= quota_result.check.decision == "unavailable"
+            if not quota_result.allowed:
+                allowed, reason, status = False, quota_result.check.reason, quota_result.status
         request_id = str(uuid4())
-        remote = Check("webdecoy", "remote", self._mode, "skipped", "local_denial")
+        remote = Check(
+            "webdecoy",
+            "remote",
+            self._mode,
+            "skipped",
+            "account_quota_denial" if quota_result and not quota_result.allowed else "local_denial",
+        )
         if allowed:
             try:
                 if request.client_ip is not None and not isinstance(request.client_ip, str):
@@ -367,6 +387,8 @@ class Client:
             status,
             degraded,
             tuple(checks),
+            quota=quota_result,
+            retry_after_seconds=quota_result.retry_after_seconds if quota_result else 0,
         )
         self._issued[decision] = False
         return decision
@@ -401,7 +423,7 @@ class Client:
         action = (
             "forwarded"
             if decision.allowed
-            else ("denied_unavailable" if decision.reason == "protection_unavailable" else "denied")
+            else ("denied_unavailable" if decision.status == 503 else "denied")
         )
         if outcome.cancelled:
             action = "cancelled"

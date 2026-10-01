@@ -4,8 +4,8 @@ Async request admission for Python AI endpoints. Local application rules run in
 your process; bot detection runs in WebDecoy. Apache-2.0 licensed.
 
 **Development preview, not published to PyPI.** This first implementation covers
-admission, reporting and an explicit FastAPI/Starlette route wrapper. Shared quota,
-concurrency, model-budget accounting, browser evidence and MCP adapters are not yet
+admission, shared account/session quotas, reporting and an explicit FastAPI/Starlette
+route wrapper. Concurrency, model-budget accounting, browser evidence and MCP adapters are not yet
 implemented. It is not a prompt-injection filter or a spending guarantee.
 
 ## Local installation
@@ -88,6 +88,60 @@ headers and prevent bypass. Do not use a peer already rewritten by framework pro
 middleware. Missing/untrusted IP evidence skips scoring and marks coverage degraded.
 Routes are fixed templates, not real user IDs or raw request URLs.
 
+## Shared account quotas
+
+```python
+from webdecoy_ai_protection import AccountQuota, QuotaSubject
+
+quota = AccountQuota(
+    rule_id="chat_v1",
+    subject_secret=server_subject_secret,  # At least 32 UTF-8 bytes; use a random secret.
+    subject=lambda ctx: QuotaSubject(ctx["account_id"], ctx["session_id"]),
+    limit=100,
+    session_limit=20,  # Optional; supplements the account limit.
+    window_seconds=3600,
+    mode="observe",
+    failure_mode="open",
+    idempotency=True,
+)
+# Pass account_quota=quota when creating Client. Pass authenticated, authorized
+# server state as context to check() or protect(); never use browser identity claims.
+```
+
+All replicas (including Node/Go) must use the same property, rule ID, secret and
+policy. The SDK sends length-framed HMAC-SHA256 pseudonyms, never raw account or
+session IDs. Changing the secret creates different buckets; keep it stable and
+private. The backend fixes the policy for each rule ID; changed limits/window
+produce a policy conflict rather than resetting the quota.
+
+The order is **local rules → shared quota → detector → your handler**. Enforced
+local denials consume no quota; a later detector denial or model failure does not
+refund consumed admission. Observe mode also consumes the shared quota but allows
+requests that exceed it. Quota enforcement is independent of detector/dashboard
+mode. Use `mode="enforce"` to return 429 with `Retry-After` when exhausted, and
+`failure_mode="closed"` to return 503 when shared state is unavailable. Defaults
+are observe/open; fail-open cannot guarantee a hard request limit.
+
+`decision.quota` exposes the check, remaining/reset values when confirmed, and an
+optional recovery operation ID. `decision.retry_after_seconds` is set on enforced
+quota denials; the FastAPI wrapper sets the HTTP header automatically.
+
+With `idempotency=True`, schema 2 retries an uncertain quota RPC at most once,
+using exactly the same payload and operation ID. Each attempt has its own `timeout`
+(default 1 second, maximum 10). Without this option, schema 1 makes one attempt.
+Terminal responses below HTTP 500 are not retried. An ambiguous response becomes
+`account_quota_outcome_unknown`; a later expiration error does not erase that
+uncertainty. Cancellation propagates without retrying or admitting the request.
+
+For recovery across request/process loss, generate `new_quota_operation_id()` and
+persist it in trusted server state **before** admission; return it from the quota's
+optional `operation_id(context)` callback. The backend recovery window is ten
+minutes. Do not replace an uncertain operation with a new ID. Generated receipts
+are available on `decision.quota.operation_id` when a decision returns; a cancelled
+call may produce no decision. Recovery receipts are not sent in central reports.
+**An admission receipt does not deduplicate model execution.** The application
+must separately ensure a replay cannot run a model/tool side effect twice.
+
 ## Policies and availability
 
 `Rule(id, evaluate, mode="observe", failure_mode="closed")` accepts a cheap,
@@ -112,7 +166,8 @@ network waiting; verified config caches for 60s, failed bindings for 5s. This is
 not an end-to-end latency SLA. Reporting defaults to a separate one-second deadline
 and 100 pending tasks. Remote JSON responses are capped at 64KiB; outgoing JSON at
 32KiB. Redirects are rejected, TLS verification is enabled, transport retries and
-environment-derived proxies are disabled. Explicit custom transports must honor
+environment-derived proxies are disabled. Optional schema-2 quota recovery has
+its own bounded retry described above. Explicit custom transports must honor
 cancellation and maintain security properties.
 
 ## Data sent
@@ -121,6 +176,8 @@ Detection receives a generated request ID, adapter mode, normalized route, metho
 client IP, timestamp, header names, User-Agent, Accept-Language and Accept-Encoding.
 Those three header values are untrusted metadata. Prompts, bodies, model outputs,
 authorization/cookie values and trusted local-rule context are not serialized.
+When quotas are enabled, quota RPCs also send the rule ID, policy values, hashed
+account/session identifiers and (for schema 2) a recovery operation ID.
 Reports contain decision/check metadata and handler outcomes, without IPs or header
 values. Do not put sensitive identifiers in rule IDs, reason codes or route templates.
 

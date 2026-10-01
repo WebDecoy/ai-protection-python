@@ -119,7 +119,13 @@ async def protect(
         if not decision.allowed:
             client.report(decision)
             response_ready = True
-            return JSONResponse({"error": decision.reason}, status_code=decision.status)
+            return JSONResponse(
+                {"error": decision.reason},
+                status_code=decision.status,
+                headers={"Retry-After": str(decision.retry_after_seconds)}
+                if decision.retry_after_seconds
+                else None,
+            )
         attempted = True
         response = await handler()
         if not isinstance(response, Response):

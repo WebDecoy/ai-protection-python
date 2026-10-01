@@ -3,7 +3,10 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from .quota import QuotaResult
 
 Mode = Literal["observe", "enforce"]
 FailureMode = Literal["open", "closed"]
@@ -56,6 +59,8 @@ class Decision:
     status: int
     degraded: bool
     checks: tuple[Check, ...]
+    quota: "QuotaResult | None" = None
+    retry_after_seconds: int = 0
 
 
 @dataclass(frozen=True)
