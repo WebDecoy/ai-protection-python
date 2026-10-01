@@ -3,21 +3,24 @@
 Async request admission for Python AI endpoints. Local application rules run in
 your process; bot detection runs in WebDecoy. Apache-2.0 licensed.
 
-**Development preview, not published to PyPI.** This first implementation covers
+**Alpha preview.** This first implementation covers
 admission, shared account/session quotas, reporting and an explicit FastAPI/Starlette
 route wrapper, including optional concurrency leases across streamed responses.
 Per-attempt model budgets and usage reporting are also available. Browser evidence
 and MCP adapters are not yet implemented. It is not a prompt-injection filter or a spending guarantee.
 
-## Local installation
+## Installation
 
 Requires Python 3.11+ and asyncio. HTTPX is the only core runtime dependency.
 FastAPI/Starlette support is optional; synchronous applications and Trio are not
-supported in this preview. From this checkout:
+supported in this preview.
 
 ```sh
-python -m pip install '.[fastapi]'
+python -m pip install 'webdecoy-ai-protection[fastapi]==0.1.0a1'
 ```
+
+For core-only applications, omit `[fastapi]`. For development from this checkout,
+use `python -m pip install -e '.[dev]'`.
 
 ## Core client
 
