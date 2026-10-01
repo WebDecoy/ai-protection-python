@@ -18,6 +18,7 @@ from weakref import WeakKeyDictionary
 
 import httpx
 
+from .budget import Budget, _run_budget, _validate_budget
 from .concurrency import Concurrency, _run_concurrent, _validate_concurrency
 from .models import Check, Decision, FailureMode, Mode, Outcome, RequestMetadata, Rule, RuleResult
 from .quota import AccountQuota, _check_quota, _validate_quota
@@ -66,6 +67,7 @@ class Client:
         reporting: bool = True,
         account_quota: AccountQuota | None = None,
         concurrency: Concurrency | None = None,
+        budget: Budget | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         try:
@@ -124,6 +126,9 @@ class Client:
             _validate_quota(account_quota)
         if concurrency is not None:
             _validate_concurrency(concurrency)
+        if budget is not None:
+            _validate_budget(budget)
+        self._budget = budget
         self._concurrency = concurrency
         self._quota = account_quota
         self._base_url = base_url.rstrip("/")
@@ -398,6 +403,12 @@ class Client:
         self._issued[decision] = False
         return decision
 
+    async def run_budget(self, context, call, work):
+        """Reserve and settle exactly one awaited provider attempt after admission."""
+        if self._budget is None:
+            raise ValueError("budget configuration required")
+        return await _run_budget(self, self._budget, context, call, work)
+
     async def run_concurrent(self, context, work):
         """Run one awaited unit after check(); work must own and await all provider work.
 
@@ -476,14 +487,22 @@ class Client:
         }
         if outcome.status is not None:
             payload["handler_status"] = outcome.status
-        task = asyncio.create_task(self._send_report(payload))
+        return self._queue_report(payload, "/api/v1/sdk/ai-abuse/reports")
+
+    def _queue_report(self, payload: dict, path: str) -> bool:
+        if not self._reporting or self._closed:
+            return False
+        if len(self._pending) >= self._capacity:
+            _LOG.warning("WebDecoy report dropped: queue full")
+            return False
+        task = asyncio.create_task(self._send_report(dict(payload), path))
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
         return True
 
-    async def _send_report(self, payload: dict) -> None:
+    async def _send_report(self, payload: dict, path: str) -> None:
         try:
-            await self._json("POST", "/api/v1/sdk/ai-abuse/reports", payload, self._report_timeout)
+            await self._json("POST", path, payload, self._report_timeout)
         except _Unavailable:
             _LOG.warning("WebDecoy report delivery failed")
 

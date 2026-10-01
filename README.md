@@ -6,8 +6,8 @@ your process; bot detection runs in WebDecoy. Apache-2.0 licensed.
 **Development preview, not published to PyPI.** This first implementation covers
 admission, shared account/session quotas, reporting and an explicit FastAPI/Starlette
 route wrapper, including optional concurrency leases across streamed responses.
-Model-budget accounting, browser evidence and MCP adapters are not yet
-implemented. It is not a prompt-injection filter or a spending guarantee.
+Per-attempt model budgets and usage reporting are also available. Browser evidence
+and MCP adapters are not yet implemented. It is not a prompt-injection filter or a spending guarantee.
 
 ## Local installation
 
@@ -206,6 +206,102 @@ Timeout defaults to one second, maximum `min(10, ttl_seconds / 6)`; TTL range is
 before closing the client. Account limits are 1–1,000 and feature limits are at
 least the account limit, up to 10,000. This is cooperative admission control, not
 proof of provider completion or a spending guarantee.
+
+## Model budgets and usage
+
+Configure `Budget` on the client and call `run_budget()` **after normal admission**
+for each individual provider attempt. Configuration alone does not intercept model
+calls or automatically budget a FastAPI handler.
+
+```python
+from webdecoy_ai_protection import (
+    Budget, BudgetCall, BudgetCompletion, BudgetLimits, BudgetPrice, BudgetSubject,
+    ollama_budget_usage,
+)
+
+budget = Budget(
+    rule_id="chat_budget_v1",
+    subject_secret=server_subject_secret,
+    subject=lambda ctx: BudgetSubject(ctx["account_id"], ctx["organization_id"]),
+    window_seconds=3600,
+    limits=BudgetLimits(account_tokens=100_000, tenant_tokens=1_000_000),
+    prices={"local": BudgetPrice("ollama", "your-local-model", 0, 0)},
+    mode="observe",
+    failure_mode="open",
+)
+# Create Client(..., budget=budget), authenticate/validate, then check admission.
+
+async def provider_attempt(runtime):
+    # Your adapter must enforce runtime.model and conservative input/output bounds.
+    # Await the complete provider operation (including streamed output).
+    final = await your_ollama_adapter(runtime)
+    usage = ollama_budget_usage(
+        final.get("model"), final.get("done"),
+        final.get("prompt_eval_count"), final.get("eval_count"),
+    )
+    return BudgetCompletion(value=final, usage=usage)
+
+result = await client.run_budget(
+    trusted_context,
+    BudgetCall("local", max_input_tokens=2048, max_output_tokens=512,
+               request_id=decision.id),
+    provider_attempt,
+)
+# Denial: return result.status / Retry-After before provider work.
+# Success: use result.value; inspect result.reason for accounting status.
+```
+
+The rates above are explicitly zero for a local model; configure your own prices
+in **integer micro-USD per million tokens** for paid models. The SDK does not fetch
+or verify provider prices. Costs round up once across combined input/output.
+`BudgetLimits` supports account, tenant and feature limits in tokens or micro-USD;
+zero disables a limit, and at least one limit must be positive. Limits and window
+are fixed by the backend for each rule ID. Keep secrets/policy consistent across
+replicas. Limits are bounded window accounting, not a provider billing guarantee.
+
+A call reserves the conservative maximum input/output allowance before work.
+Your application must enforce those bounds, including context/history/tool tokens.
+Only final usage with matching provider/model and explicit nonnegative integer
+counts settles the reservation. Missing/malformed counts, missing final chunks and
+provider/model mismatch retain the full reservation; confirmed zero is distinct.
+The Ollama helper normalizes final counters only; it does not call Ollama, count
+input tokens, limit output, or implement a framework/provider transport.
+
+Use `BudgetCompletion(value, usage)` to preserve provider output separately from
+accounting. A return value without that wrapper is preserved with unknown usage.
+For streaming, consume the stream **inside** the callback and await terminal usage;
+returning a `StreamingResponse` or iterator is not completion. Arrange budget
+denial before committing HTTP headers. This preview has no automatic budgeted
+HTTP-streaming bridge. When composing concurrency, wrap the complete budgeted
+provider attempt inside the concurrency-owned work; FastAPI's concurrency wrapper
+already owns its handler and full response lifecycle.
+
+- Every `run_budget()` invocation generates a distinct `call_id`. Provider retries
+  or fallbacks are separate attempts and require separate reservations. Optional
+  `request_id=decision.id` links attempts to admission.
+- Observe mode may reserve beyond a limit, setting `would_deny=True`. An enforced
+  limit returns 429; explicit replay denial never starts provider work.
+- Reserve and settle each make one bounded RPC; neither is retried. Default state
+  failure is open. Choosing closed in enforce mode denies unavailable reservations
+  with 503. Fail-open may run without a confirmed reservation; a lost reserve
+  response may still have consumed capacity remotely.
+- Missing usage, provider exceptions, cancellation and runtime timeout retain the
+  reserved maximum. Cancellation is not a refund or proof the provider stopped.
+- Settlement failures preserve `result.value` and return
+  `reason="budget_settlement_unavailable"`. Never rerun the model to repair
+  accounting. A lost settlement response may already have committed.
+- Provider exceptions and cancellation propagate. Usage exceeding the configured
+  token bounds is flagged as `overrun`; this cannot reverse an already-incurred cost.
+- `max_runtime` defaults to 300 seconds (maximum 900); provider work must cooperate
+  with asyncio cancellation. RPC `timeout` defaults to one second (maximum 10).
+
+Start/finish usage events use the same bounded reporting queue as admission reports.
+They include call/request/reservation IDs, policy/price IDs, rates and token/cost
+counts when known. No prompts, output, raw subject identities or exception messages
+are serialized. Reporting is best effort, can arrive out of order, and never changes
+accounting balances. A finish event can exist without a delivered start event.
+Drain with `flush()`/`aclose()` as usual. Validation uses deterministic provider
+fixtures and the real backend; it does not validate a live provider's billing.
 
 ## Policies and availability
 
