@@ -9,7 +9,7 @@ import math
 import re
 import time
 from collections.abc import Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Any, Self
 from urllib.parse import urlsplit
@@ -18,6 +18,7 @@ from weakref import WeakKeyDictionary
 
 import httpx
 
+from .concurrency import Concurrency, _run_concurrent, _validate_concurrency
 from .models import Check, Decision, FailureMode, Mode, Outcome, RequestMetadata, Rule, RuleResult
 from .quota import AccountQuota, _check_quota, _validate_quota
 
@@ -64,6 +65,7 @@ class Client:
         rules: Sequence[Rule] = (),
         reporting: bool = True,
         account_quota: AccountQuota | None = None,
+        concurrency: Concurrency | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         try:
@@ -120,6 +122,9 @@ class Client:
             ids.add(rule.id)
         if account_quota is not None:
             _validate_quota(account_quota)
+        if concurrency is not None:
+            _validate_concurrency(concurrency)
+        self._concurrency = concurrency
         self._quota = account_quota
         self._base_url = base_url.rstrip("/")
         self._property_id = property_id.lower()
@@ -392,6 +397,35 @@ class Client:
         )
         self._issued[decision] = False
         return decision
+
+    async def run_concurrent(self, context, work):
+        """Run one awaited unit after check(); work must own and await all provider work.
+
+        Consume streams inside work, not after returning. Cancellation/errors retain
+        capacity until max_seconds. Release failure does not retry or raise after work.
+        """
+        if self._concurrency is None:
+            raise ValueError("concurrency configuration required")
+        return await _run_concurrent(self, self._concurrency, context, work)
+
+    def _with_concurrency(self, decision, result):
+        # Transfer the unreported admission to a new immutable combined decision.
+        if decision not in self._issued or self._issued[decision]:
+            raise RuntimeError("admission already reported")
+        combined = replace(
+            decision,
+            checks=(*decision.checks, result.check),
+            degraded=decision.degraded or result.check.decision == "unavailable",
+            allowed=decision.allowed and result.allowed,
+            status=result.status if not result.allowed else decision.status,
+            reason=result.check.reason if not result.allowed else decision.reason,
+            retry_after_seconds=result.retry_after_seconds
+            if not result.allowed
+            else decision.retry_after_seconds,
+        )
+        self._issued[decision] = True
+        self._issued[combined] = False
+        return combined
 
     def report(self, decision: Decision, outcome: Outcome | None = None) -> bool:
         self._check_loop()

@@ -5,7 +5,8 @@ your process; bot detection runs in WebDecoy. Apache-2.0 licensed.
 
 **Development preview, not published to PyPI.** This first implementation covers
 admission, shared account/session quotas, reporting and an explicit FastAPI/Starlette
-route wrapper. Concurrency, model-budget accounting, browser evidence and MCP adapters are not yet
+route wrapper, including optional concurrency leases across streamed responses.
+Model-budget accounting, browser evidence and MCP adapters are not yet
 implemented. It is not a prompt-injection filter or a spending guarantee.
 
 ## Local installation
@@ -142,6 +143,70 @@ call may produce no decision. Recovery receipts are not sent in central reports.
 **An admission receipt does not deduplicate model execution.** The application
 must separately ensure a replay cannot run a model/tool side effect twice.
 
+## Shared concurrency leases
+
+```python
+from webdecoy_ai_protection import Concurrency, QuotaSubject
+
+concurrency = Concurrency(
+    rule_id="chat_concurrency_v1",
+    subject_secret=server_subject_secret,
+    subject=lambda ctx: QuotaSubject(ctx["account_id"]),
+    account_limit=2,
+    feature_limit=20,
+    ttl_seconds=30,
+    max_seconds=300,
+    mode="observe",
+    failure_mode="open",
+)
+# Pass concurrency=concurrency to Client.
+```
+
+With FastAPI `protect()`, configuring concurrency automatically acquires a lease
+**after ordinary admission and before calling your handler**, then renews it until
+the original response stream and background tasks finish. The wrapper includes the
+concurrency check in the single central outcome report. Exhausted enforced capacity
+returns 429 with `Retry-After`; closed acquisition failures return 503.
+
+For core-client integrations, call `check()` first and enforce that decision, then
+use `await client.run_concurrent(context, deferred_async_work)`. The result exposes
+`allowed`, `status`, `retry_after_seconds`, `check`, `leased`, `released`, and the
+work's return `value`. This helper does not run ordinary admission or emit a separate
+central report. Core callers own their normal decision/outcome reporting.
+
+**The work callback must consume and await all provider work before returning.**
+Returning an async iterator, `StreamingResponse`, or detached task is not completion;
+consume the stream inside the callback. The FastAPI wrapper handles the ASGI response
+lifetime for you. All work must cooperate with asyncio cancellation.
+
+- Account and feature capacity is shared across replicas using the same property,
+  rule ID, secret and immutable backend policy. Raw account IDs stay in-process.
+- Observe mode can grant a lease while recording that capacity was exceeded. A
+  replayed acquisition never authorizes another execution, even in observe mode.
+- Acquisition makes one bounded RPC and never retries. Its failure policy is
+  independent of quota and detector policies. Fail-open work has no confirmed lease
+  and cannot promise a hard concurrency cap.
+- Once acquired, failed/invalid renewal cancels work regardless of observe/enforce
+  or acquisition failure policy. `ConcurrencyLeaseLost` propagates; if a stream
+  already started, its HTTP status cannot be replaced with a new denial response.
+- Work also has a `max_seconds` deadline (including acquisition time), even when
+  acquisition failed open. The SDK uses monotonic time and charges network time
+  against the lease lifetime.
+- Only confirmed normal completion releases capacity. Errors, cancellation and
+  uncertain acquisition retain any server reservation until its maximum deadline.
+  Stopping renewal or hitting the shorter TTL does **not** free that reservation.
+  Cancellation does not prove an upstream provider stopped.
+- Release makes one bounded RPC. Failure returns the completed work's value with
+  `released=False`; it never raises an accounting error that invites a model retry.
+  FastAPI preserves the response and logs a content-free warning. No provider work
+  is automatically retried.
+
+Timeout defaults to one second, maximum `min(10, ttl_seconds / 6)`; TTL range is
+6–120 seconds, maximum runtime range is TTL–900 seconds. Drain active requests
+before closing the client. Account limits are 1–1,000 and feature limits are at
+least the account limit, up to 10,000. This is cooperative admission control, not
+proof of provider completion or a spending guarantee.
+
 ## Policies and availability
 
 `Rule(id, evaluate, mode="observe", failure_mode="closed")` accepts a cheap,
@@ -178,6 +243,8 @@ Those three header values are untrusted metadata. Prompts, bodies, model outputs
 authorization/cookie values and trusted local-rule context are not serialized.
 When quotas are enabled, quota RPCs also send the rule ID, policy values, hashed
 account/session identifiers and (for schema 2) a recovery operation ID.
+Concurrency RPCs send policy values, the hashed account identifier and an acquisition
+nonce or lease ID; lease identifiers are not included in central reports.
 Reports contain decision/check metadata and handler outcomes, without IPs or header
 values. Do not put sensitive identifiers in rule IDs, reason codes or route templates.
 

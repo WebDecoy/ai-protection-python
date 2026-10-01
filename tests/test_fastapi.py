@@ -22,8 +22,11 @@ class FastAPITests(unittest.IsolatedAsyncioTestCase):
         handler_error=False,
         stream_error=False,
         spec="2.3",
+        concurrency=None,
+        fixture=None,
+        stream_pause=0.01,
     ):
-        fixture = Fixture()
+        fixture = fixture or Fixture()
         fixture.verdict = verdict
         fixture.detect_error = outage
         if disconnect == "admission":
@@ -40,6 +43,7 @@ class FastAPITests(unittest.IsolatedAsyncioTestCase):
         sent, calls, backgrounds, closed = [], [], [], []
         client = fixture.client(
             mode="enforce",
+            concurrency=concurrency,
             rules=[Rule("plan", lambda _: RuleResult(not local_deny), mode="enforce")],
         )
         app = FastAPI()
@@ -63,7 +67,7 @@ class FastAPITests(unittest.IsolatedAsyncioTestCase):
                     try:
                         calls.append("model")
                         yield b"data: first\n\n"
-                        await asyncio.sleep(0.01)
+                        await asyncio.sleep(stream_pause)
                         if stream_error:
                             raise ValueError("private stream error")
                         yield b"data: second\n\n"
