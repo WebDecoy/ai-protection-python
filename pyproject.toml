@@ -12,6 +12,12 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 dependencies = ["httpx>=0.28,<0.29"]
 
+[project.urls]
+Homepage = "https://webdecoy.com"
+Repository = "https://github.com/WebDecoy/ai-protection-python"
+Documentation = "https://github.com/WebDecoy/ai-protection-python#readme"
+Issues = "https://github.com/WebDecoy/ai-protection-python/issues"
+
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.115,<1"]
 dev = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "build>=1.2,<2", "ruff>=0.11,<1"]
