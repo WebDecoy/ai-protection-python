@@ -357,3 +357,44 @@ python -m build
 
 Tests use deterministic service/model fixtures. They establish integration behavior,
 not detection effectiveness, customer savings, or production capacity.
+
+
+### Runnable Ollama provider example
+
+[`examples/ollama_budget.py`](examples/ollama_budget.py) wraps a real
+[`ollama.AsyncClient.generate`](https://github.com/ollama/ollama-python) call
+with the existing published WebDecoy SDK. Install the example dependencies:
+
+```sh
+python -m pip install -r examples/requirements-ollama.txt
+ollama pull qwen2.5:0.5b
+python examples/ollama_budget.py
+```
+
+Run Ollama locally first. Set `WEBDECOY_KEY`, `WEBDECOY_PROPERTY_ID` and a stable
+server-only `WEBDECOY_SUBJECT_SECRET` (at least 32 characters). The demo uses
+fixed local identities and observe mode. In an application, call `generate()`
+after authentication, tenant authorization and request admission; supply only
+server-derived account/organization context and pass the admission decision ID
+for correlation. Handle budget denial before starting a response. Do not expose
+the demo identities as public authentication.
+
+The example sends prompts only to loopback Ollama and accounting metadata to
+WebDecoy. It uses one fixed local model with zero monetary rates, no fallback,
+raw generation, a 1,024-byte input bound, a 2,048-token context setting and
+128-token output setting. It reserves the full input context plus output allowance.
+These depend on the provider honoring its settings; byte length is not an exact
+token count. Overruns remain visible and are not a guaranteed billing ceiling.
+
+This example is non-streaming. It validates final provider/model/count fields;
+missing usage retains the reservation, while explicit zero can settle it. Errors
+and cancellation never retry inference or refund unknown work; settlement failure
+preserves the returned text. Cancellation does not prove the server stopped work.
+For streaming ownership, see the budget lifecycle guidance above. LangChain,
+LangGraph and automatic HTTP streaming integration are follow-up work.
+
+CI uses the real pinned Ollama 0.6.3 Python SDK with an in-memory HTTP transport
+and synthetic final responses. It verifies serialization, usage normalization,
+denial before the provider, privacy, cancellation and accounting failures. It
+does not execute a model or validate live provider billing or model quality.
+Ollama is an example dependency, not a dependency of the WebDecoy package.
