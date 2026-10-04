@@ -20,7 +20,7 @@ Issues = "https://github.com/WebDecoy/ai-protection-python/issues"
 
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.115,<1"]
-dev = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "build>=1.2,<2", "ruff>=0.11,<1"]
+dev = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "build>=1.2,<2", "ruff>=0.11,<1", "ollama==0.6.3"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/webdecoy_ai_protection"]
