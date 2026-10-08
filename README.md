@@ -3,7 +3,7 @@
 Async request admission for Python AI endpoints. Local application rules run in
 your process; bot detection runs in WebDecoy. Apache-2.0 licensed.
 
-**Alpha preview.** This first implementation covers
+**Beta.** This release covers
 admission, shared account/session quotas, reporting and an explicit FastAPI/Starlette
 route wrapper, including optional concurrency leases across streamed responses.
 Per-attempt model budgets and usage reporting are also available. Browser evidence
@@ -13,10 +13,10 @@ and MCP adapters are not yet implemented. It is not a prompt-injection filter or
 
 Requires Python 3.11+ and asyncio. HTTPX is the only core runtime dependency.
 FastAPI/Starlette support is optional; synchronous applications and Trio are not
-supported in this preview.
+supported in this beta.
 
 ```sh
-python -m pip install 'webdecoy-ai-protection[fastapi]==0.1.0a1'
+python -m pip install 'webdecoy-ai-protection[fastapi]==0.1.0b1'
 ```
 
 For core-only applications, omit `[fastapi]`. For development from this checkout,
@@ -274,7 +274,7 @@ Use `BudgetCompletion(value, usage)` to preserve provider output separately from
 accounting. A return value without that wrapper is preserved with unknown usage.
 For streaming, consume the stream **inside** the callback and await terminal usage;
 returning a `StreamingResponse` or iterator is not completion. Arrange budget
-denial before committing HTTP headers. This preview has no automatic budgeted
+denial before committing HTTP headers. This beta has no automatic budgeted
 HTTP-streaming bridge. When composing concurrency, wrap the complete budgeted
 provider attempt inside the concurrency-owned work; FastAPI's concurrency wrapper
 already owns its handler and full response lifecycle.
@@ -363,7 +363,7 @@ not detection effectiveness, customer savings, or production capacity.
 
 [`examples/ollama_budget.py`](examples/ollama_budget.py) wraps a real
 [`ollama.AsyncClient.generate`](https://github.com/ollama/ollama-python) call
-with the existing published WebDecoy SDK. Install the example dependencies:
+with the published WebDecoy SDK. Install the example dependencies:
 
 ```sh
 python -m pip install -r examples/requirements-ollama.txt
