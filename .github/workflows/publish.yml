@@ -1,11 +1,11 @@
-name: Publish Python alpha
+name: Publish Python pre-release
 on:
   workflow_dispatch:
     inputs:
       version:
         description: Exact version in pyproject.toml
         required: true
-        default: '0.1.0a1'
+        default: '0.1.0b1'
 permissions:
   contents: read
 jobs:
@@ -25,11 +25,13 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           python - <<'PY'
-          import os, tomllib
+          import os, re, tomllib
           with open('pyproject.toml', 'rb') as f:
               version = tomllib.load(f)['project']['version']
           assert version == os.environ['RELEASE_VERSION'], 'release version mismatch'
-          assert 'a' in version, 'this workflow publishes alpha versions only'
+          assert re.fullmatch(r'\d+\.\d+\.\d+(a|b)\d+', version), (
+              'this workflow publishes alpha (aN) or beta (bN) pre-releases only'
+          )
           PY
       - run: python -m pip install build twine
       - run: python -m build

@@ -1,2 +1,2 @@
-webdecoy-ai-protection==0.1.0a1
+webdecoy-ai-protection==0.1.0b1
 ollama==0.6.3
